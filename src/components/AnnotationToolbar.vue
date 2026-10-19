@@ -1,4 +1,10 @@
 <script setup>
+/**
+ * 标注工具栏：工具切换、标签/颜色设置、删除与导出操作、统计信息。
+ *
+ * 组件自身不持有状态，工具/标签/颜色通过 v-model 与父组件双向绑定，
+ * 删除、导出等动作以事件形式抛出，由父组件调用标注状态管理处理。
+ */
 import { ElMessageBox } from 'element-plus'
 import {
   Aim,
@@ -17,8 +23,8 @@ const props = defineProps({
   selectedId: { type: String, default: null },
   frameIndex: { type: Number, default: 0 },
   frameCount: { type: Number, default: 0 },
-  frameShapeCount: { type: Number, default: 0 },
-  trackCount: { type: Number, default: 0 },
+  frameShapeCount: { type: Number, default: 0 }, // 当前帧图形数
+  trackCount: { type: Number, default: 0 }, // 对象（track）总数
 })
 
 const emit = defineEmits([
@@ -31,6 +37,7 @@ const emit = defineEmits([
   'export',
 ])
 
+// 工具选项：值、中文名、图标
 const tools = [
   { value: 'select', label: '选择', icon: Select },
   { value: 'rect', label: '矩形', icon: Crop },
@@ -38,6 +45,7 @@ const tools = [
   { value: 'line', label: '线', icon: Minus },
 ]
 
+/** 「从当前帧起删除」：二次确认后抛出事件 */
 async function handleDeleteFromFrame() {
   if (!props.selectedId) return
   try {
@@ -48,10 +56,11 @@ async function handleDeleteFromFrame() {
     )
     emit('delete-from-frame')
   } catch {
-    /* cancelled */
+    /* 用户取消 */
   }
 }
 
+/** 「清空」：二次确认后抛出事件 */
 async function handleClear() {
   try {
     await ElMessageBox.confirm('将清空当前数据的所有标注，是否继续？', '清空标注', {
@@ -61,13 +70,14 @@ async function handleClear() {
     })
     emit('clear')
   } catch {
-    /* cancelled */
+    /* 用户取消 */
   }
 }
 </script>
 
 <template>
   <div class="toolbar">
+    <!-- 工具切换 -->
     <el-radio-group
       :model-value="tool"
       class="toolbar__tools"
@@ -83,6 +93,7 @@ async function handleClear() {
       </el-radio-button>
     </el-radio-group>
 
+    <!-- 新建标注的标签 -->
     <div class="toolbar__field">
       <span class="toolbar__label">标签</span>
       <el-input
@@ -94,6 +105,7 @@ async function handleClear() {
       />
     </div>
 
+    <!-- 新建标注的颜色 -->
     <div class="toolbar__field">
       <span class="toolbar__label">颜色</span>
       <el-color-picker
@@ -102,6 +114,7 @@ async function handleClear() {
       />
     </div>
 
+    <!-- 操作按钮 -->
     <div class="toolbar__actions">
       <el-button
         type="danger"
@@ -127,6 +140,7 @@ async function handleClear() {
       </el-button>
     </div>
 
+    <!-- 统计信息 -->
     <div class="toolbar__stats">
       <el-tag type="info" effect="plain">
         帧 {{ frameCount ? frameIndex + 1 : 0 }} / {{ frameCount }}
@@ -145,6 +159,7 @@ async function handleClear() {
   gap: 12px 16px;
 }
 
+/* 工具按钮内图标与文字横向排列 */
 .toolbar__tools :deep(.el-radio-button__inner) {
   display: flex;
   align-items: center;

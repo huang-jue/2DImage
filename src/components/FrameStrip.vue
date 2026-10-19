@@ -1,18 +1,25 @@
 <script setup>
+/**
+ * 帧条组件：多帧浏览。
+ * 提供上一帧/下一帧、滑块与缩略图列表；带标注的帧显示绿色圆点。
+ * 通过 v-model:current 与父组件同步当前帧。
+ */
 import { computed } from 'vue'
 import { ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
 
 const props = defineProps({
-  frames: { type: Array, default: () => [] },
-  current: { type: Number, default: 0 },
-  markedFrames: { type: Array, default: () => [] },
+  frames: { type: Array, default: () => [] }, // [{ index, name, url }]
+  current: { type: Number, default: 0 }, // 当前帧序号
+  markedFrames: { type: Array, default: () => [] }, // 含标注的帧序号列表
 })
 
 const emit = defineEmits(['update:current'])
 
 const maxIndex = computed(() => Math.max(props.frames.length - 1, 0))
+// 用 Set 加速缩略图上的标注标记判断
 const markedSet = computed(() => new Set(props.markedFrames))
 
+/** 切换到指定帧（自动夹取到合法范围） */
 function go(index) {
   const next = Math.min(Math.max(index, 0), maxIndex.value)
   if (next !== props.current) emit('update:current', next)
@@ -108,6 +115,7 @@ function go(index) {
   transition: border-color 0.2s;
 }
 
+/* 当前帧高亮 */
 .frame-strip__item.is-active {
   border-color: #409eff;
 }
@@ -132,6 +140,7 @@ function go(index) {
   line-height: 18px;
 }
 
+/* 含标注帧的标记圆点 */
 .frame-strip__dot {
   position: absolute;
   right: 6px;

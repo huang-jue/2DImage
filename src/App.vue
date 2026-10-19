@@ -1,4 +1,12 @@
 <script setup>
+/**
+ * 应用主页面：串联数据集、标注状态、工具栏、画布与帧条。
+ *
+ * 数据流：
+ *   useDatasets  提供数据集与帧列表（静态发现 + 校验）
+ *   useAnnotation 管理按数据集隔离的跨帧标注（track）
+ *   画布通过 shapes(当前帧) 渲染，编辑结果经 create/update/select/delete 回流到 useAnnotation
+ */
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Picture } from '@element-plus/icons-vue'
@@ -11,26 +19,29 @@ import { useAnnotation } from './composables/useAnnotation'
 const { datasets, report, totalFrames, verifyAllFrames } = useDatasets()
 const annotation = useAnnotation()
 
-const activeId = ref(datasets[0]?.id ?? '')
-const frameIndex = ref(0)
-const tool = ref('select')
-const label = ref('')
-const color = ref('#409eff')
-const selectedId = ref(null)
-const verification = ref([])
+const activeId = ref(datasets[0]?.id ?? '') // 当前数据集 id
+const frameIndex = ref(0) // 当前帧序号
+const tool = ref('select') // 当前工具
+const label = ref('') // 新建标注的标签
+const color = ref('#409eff') // 新建标注的颜色
+const selectedId = ref(null) // 选中的 track id
+const verification = ref([]) // 数据校验结果
 
+// —— 派生状态 ——
 const activeDataset = computed(
   () => datasets.find((item) => item.id === activeId.value) || datasets[0],
 )
 const frames = computed(() => activeDataset.value?.frames ?? [])
 const lastFrame = computed(() => Math.max(frames.value.length - 1, 0))
 const imageUrl = computed(() => frames.value[frameIndex.value]?.url ?? '')
+// 当前帧需要渲染的图形
 const shapes = computed(() =>
   activeId.value ? annotation.getFrameShapes(activeId.value, frameIndex.value) : [],
 )
 const trackCount = computed(() =>
   activeId.value ? annotation.countTracks(activeId.value) : 0,
 )
+// 含标注的帧序号集合（供帧条显示标记）
 const markedFrames = computed(() => {
   if (!activeId.value) return []
   const set = new Set()
@@ -40,6 +51,8 @@ const markedFrames = computed(() => {
   return [...set]
 })
 
+// —— 画布事件处理 ——
+/** 新建标注：从当前帧延伸到末帧，并选中新对象 */
 function handleCreate(payload) {
   const track = annotation.createTrack(activeId.value, {
     ...payload,
@@ -50,6 +63,7 @@ function handleCreate(payload) {
   selectedId.value = track.id
 }
 
+/** 编辑标注：从当前帧传播到末帧 */
 function handleUpdate({ trackId, geometry }) {
   annotation.updateFromFrame(
     activeId.value,
@@ -60,11 +74,13 @@ function handleUpdate({ trackId, geometry }) {
   )
 }
 
+/** 删除整条 track */
 function handleDelete(trackId) {
   annotation.deleteTrack(activeId.value, trackId)
   if (selectedId.value === trackId) selectedId.value = null
 }
 
+/** 从当前帧起删除（若对象被删空则取消选中） */
 function handleDeleteFromFrame() {
   if (!selectedId.value) return
   annotation.deleteFromFrame(activeId.value, selectedId.value, frameIndex.value)
@@ -73,11 +89,13 @@ function handleDeleteFromFrame() {
   }
 }
 
+/** 清空当前数据集全部标注 */
 function handleClear() {
   annotation.clearDataset(activeId.value)
   selectedId.value = null
 }
 
+/** 导出当前数据集标注为 JSON 文件 */
 function handleExport() {
   const data = annotation.exportDataset(activeId.value, {
     name: activeDataset.value?.name,
@@ -93,11 +111,13 @@ function handleExport() {
   ElMessage.success('已导出标注 JSON')
 }
 
+// 切换数据集：回到第 0 帧并清除选中
 watch(activeId, () => {
   frameIndex.value = 0
   selectedId.value = null
 })
 
+// 切换帧：若选中对象在目标帧不可见，则取消选中
 watch(frameIndex, () => {
   if (!selectedId.value) return
   const visible = annotation
@@ -106,6 +126,7 @@ watch(frameIndex, () => {
   if (!visible) selectedId.value = null
 })
 
+// 挂载后校验所有帧能否正常加载
 onMounted(async () => {
   verification.value = await verifyAllFrames()
   const failed = verification.value.filter((item) => !item.ok)
@@ -119,6 +140,7 @@ onMounted(async () => {
 
 <template>
   <div class="app">
+    <!-- 顶部：标题、数据集切换、数据校验标签 -->
     <header class="app__header">
       <div class="app__title">
         <el-icon :size="22"><Picture /></el-icon>
@@ -146,6 +168,7 @@ onMounted(async () => {
       </div>
     </header>
 
+    <!-- 工具栏 -->
     <section class="app__toolbar">
       <AnnotationToolbar
         v-model:tool="tool"
@@ -163,6 +186,7 @@ onMounted(async () => {
       />
     </section>
 
+    <!-- 标注画布 -->
     <main class="app__canvas">
       <AnnotationCanvas
         :image-url="imageUrl"
@@ -178,6 +202,7 @@ onMounted(async () => {
       />
     </main>
 
+    <!-- 帧条 -->
     <footer class="app__footer">
       <FrameStrip
         v-model:current="frameIndex"
@@ -218,6 +243,7 @@ onMounted(async () => {
   margin: 0;
 }
 
+/* 数据校验标签靠右 */
 .app__verify {
   display: flex;
   align-items: center;
@@ -232,6 +258,7 @@ onMounted(async () => {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 
+/* 画布占满剩余高度 */
 .app__canvas {
   flex: 1;
   min-height: 0;
