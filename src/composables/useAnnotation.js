@@ -98,6 +98,30 @@ function normalizeGeometry(type, geometry) {
   }
 }
 
+/** 规范化关键帧：过滤掉没有几何的帧；缺失时兼容旧数据，默认起始帧为关键帧 */
+function normalizeKeyframes(rawKeyframes, geometries) {
+  const keys = frameKeys(geometries)
+  if (!keys.length) return []
+  if (!Array.isArray(rawKeyframes)) return [keys[0]]
+  const valid = [
+    ...new Set(
+      rawKeyframes
+        .map(Number)
+        .filter((key) => Number.isInteger(key) && geometries[key]),
+    ),
+  ].sort((a, b) => a - b)
+  return valid.length ? valid : [keys[0]]
+}
+
+/** 把某一帧标记为关键帧（不记录历史，调用方负责） */
+function promoteKeyframe(track, frameIndex) {
+  if (!track.geometries[frameIndex]) return
+  if (!Array.isArray(track.keyframes)) track.keyframes = []
+  if (track.keyframes.includes(frameIndex)) return
+  track.keyframes.push(frameIndex)
+  track.keyframes.sort((a, b) => a - b)
+}
+
 /** 深拷贝单条 track（只保留可序列化字段） */
 function cloneTrack(track) {
   const geometries = {}
@@ -113,6 +137,7 @@ function cloneTrack(track) {
     visible: track.visible !== false,
     locked: track.locked === true,
     startFrame: Number.isInteger(track.startFrame) ? track.startFrame : (keys[0] ?? 0),
+    keyframes: normalizeKeyframes(track.keyframes, geometries),
     geometries,
   }
 }
@@ -172,6 +197,7 @@ function parseTrack(raw) {
     visible: raw.visible !== false,
     locked: raw.locked === true,
     startFrame: keys[0],
+    keyframes: normalizeKeyframes(raw.keyframes, geometries),
     geometries,
   }
 }
@@ -309,14 +335,27 @@ export function useAnnotation(options = {}) {
       visible: true,
       locked: false,
       startFrame: frameIndex,
+      keyframes: [frameIndex],
       geometries,
     }
     list.push(track)
     return track
   }
 
+  /** 当前帧之后的下一个关键帧（没有则返回 null） */
+  function nextKeyframeAfter(track, frameIndex) {
+    const keyframes = Array.isArray(track.keyframes) ? track.keyframes : []
+    let next = null
+    for (const key of keyframes) {
+      if (key <= frameIndex) continue
+      if (next == null || key < next) next = key
+    }
+    return next
+  }
+
   /**
    * 某帧编辑时需要更新的帧列表。
+   * forward 模式会更新到“下一个关键帧之前”，避免覆盖后续关键帧。
    * @param {'frame'|'forward'|'all'} mode
    */
   function targetFrames(track, frameIndex, lastFrame, mode) {
@@ -327,12 +366,15 @@ export function useAnnotation(options = {}) {
       return [frameIndex]
     }
     if (mode === 'all') return keys
-    return keys.filter((key) => key >= frameIndex && key <= lastFrame)
+    const limit = nextKeyframeAfter(track, frameIndex)
+    return keys.filter(
+      (key) => key >= frameIndex && key <= lastFrame && (limit == null || key < limit),
+    )
   }
 
   /**
    * 在 frameIndex 帧编辑对象。
-   * @param {'frame'|'forward'|'all'} [mode] frame=仅当前帧，forward=当前帧到末帧，all=所有已有帧
+   * @param {'frame'|'forward'|'all'} [mode] frame=仅当前帧，forward=当前帧到下一个关键帧前，all=所有已有帧
    * @returns {boolean} 是否有改动
    */
   function updateFromFrame(datasetId, trackId, frameIndex, geometry, lastFrame, mode = 'forward') {
@@ -348,6 +390,8 @@ export function useAnnotation(options = {}) {
     for (const frame of targets) {
       track.geometries[frame] = cloneGeometry(track.type, normalized)
     }
+    // 本次编辑的帧自动成为关键帧
+    if (targets.includes(frameIndex)) promoteKeyframe(track, frameIndex)
     return true
   }
 
@@ -380,6 +424,7 @@ export function useAnnotation(options = {}) {
       for (const frame of targets) {
         track.geometries[frame] = cloneGeometry(track.type, normalized)
       }
+      if (targets.includes(frameIndex)) promoteKeyframe(track, frameIndex)
     }
     return prepared.length
   }
@@ -446,6 +491,8 @@ export function useAnnotation(options = {}) {
       track.geometries[frame] = cloneGeometry(track.type, normalized)
     }
     track.startFrame = fromFrame
+    // 补标的起点本身是一个新的关键帧
+    promoteKeyframe(track, fromFrame)
     return true
   }
 
@@ -466,6 +513,8 @@ export function useAnnotation(options = {}) {
     for (let frame = last + 1; frame <= toFrame; frame++) {
       track.geometries[frame] = cloneGeometry(track.type, geometry)
     }
+    // 延伸到的终点作为关键帧，便于后续插值
+    promoteKeyframe(track, toFrame)
     return true
   }
 
@@ -479,22 +528,29 @@ export function useAnnotation(options = {}) {
     const track = getTrack(datasetId, trackId)
     if (!track) return false
     if (!Number.isInteger(frameIndex) || frameIndex < 0) return false
-    if (track.geometries[frameIndex]) return false
+    if ((track.keyframes || []).includes(frameIndex)) return false
 
     const keys = frameKeys(track.geometries)
     if (!keys.length) return false
 
-    let source = keys[0]
-    for (const key of keys) {
-      if (key <= frameIndex) source = key
+    let base
+    if (geometry) {
+      base = normalizeGeometry(track.type, geometry)
+    } else if (track.geometries[frameIndex]) {
+      // 已有几何（例如“到末帧”填充出来的帧）只需标记为关键帧
+      base = cloneGeometry(track.type, track.geometries[frameIndex])
+    } else {
+      let source = keys[0]
+      for (const key of keys) {
+        if (key <= frameIndex) source = key
+      }
+      base = cloneGeometry(track.type, track.geometries[source])
     }
-    const base = geometry
-      ? normalizeGeometry(track.type, geometry)
-      : cloneGeometry(track.type, track.geometries[source])
     if (!base) return false
 
     beforeMutation()
     track.geometries[frameIndex] = base
+    promoteKeyframe(track, frameIndex)
     // 插入关键帧通常意味着要立即编辑它，隐藏状态会自动恢复到可见
     if (options.reveal && track.visible === false) track.visible = true
     track.startFrame = frameKeys(track.geometries)[0]
@@ -502,24 +558,25 @@ export function useAnnotation(options = {}) {
   }
 
   /**
-   * 在整条对象的所有相邻关键帧之间做线性插值，补全空白帧。
-   * 只填充缺失的帧，不覆盖已有几何。
-   * @returns {number} 填充的帧数
+   * 在整条对象的所有相邻关键帧之间做线性插值。
+   * 关键帧之间的帧会被重新计算（覆盖此前的填充值），关键帧本身不变。
+   * @returns {number} 重新计算的帧数
    */
   function interpolate(datasetId, trackId) {
     const track = getTrack(datasetId, trackId)
     if (!track) return 0
-    const keys = frameKeys(track.geometries)
-    if (keys.length < 2) return 0
+    const keyframes = (track.keyframes || [])
+      .filter((key) => track.geometries[key])
+      .sort((a, b) => a - b)
+    if (keyframes.length < 2) return 0
 
     // 先计算需要填充的帧，避免无改动时产生历史记录
     const pending = []
-    for (let index = 1; index < keys.length; index++) {
-      const a = keys[index - 1]
-      const b = keys[index]
+    for (let index = 1; index < keyframes.length; index++) {
+      const a = keyframes[index - 1]
+      const b = keyframes[index]
       if (b - a < 2) continue
       for (let frame = a + 1; frame < b; frame++) {
-        if (track.geometries[frame]) continue
         const geometry = interpolateGeometry(
           track.type,
           track.geometries[a],
@@ -556,6 +613,7 @@ export function useAnnotation(options = {}) {
       for (let frame = frameIndex; frame <= lastFrame; frame++) {
         if (!track.geometries[frame]) track.geometries[frame] = cloneGeometry(track.type, geometry)
       }
+      promoteKeyframe(track, frameIndex)
     }
     return candidates.length
   }
@@ -615,6 +673,7 @@ export function useAnnotation(options = {}) {
         visible: true,
         locked: false,
         startFrame: targetFrame,
+        keyframes: [targetFrame],
         geometries,
       }
       list.push(copy)
@@ -647,6 +706,13 @@ export function useAnnotation(options = {}) {
     }
     copy.startFrame = after[0]
     track.startFrame = before[0]
+    // 关键帧按拆分点分配到前后两段，并确保两段起始帧都是关键帧
+    const sourceKeyframes = (track.keyframes || []).filter((key) => key < frameIndex)
+    const newKeyframes = (copy.keyframes || []).filter((key) => key >= frameIndex)
+    if (!sourceKeyframes.includes(before[0])) sourceKeyframes.push(before[0])
+    if (!newKeyframes.includes(after[0])) newKeyframes.push(after[0])
+    track.keyframes = sourceKeyframes.sort((a, b) => a - b)
+    copy.keyframes = newKeyframes.sort((a, b) => a - b)
     ensure(datasetId).push(copy)
     return { track: copy, source: track }
   }
@@ -677,10 +743,20 @@ export function useAnnotation(options = {}) {
     }
     for (const track of targets.slice(1)) removeTrackSilently(datasetId, track.id)
     base.startFrame = frameKeys(base.geometries)[0] ?? base.startFrame
+    // 合并关键帧，并丢弃已没有几何的帧
+    const mergedKeyframes = new Set(base.keyframes || [])
+    for (const track of targets.slice(1)) {
+      for (const key of track.keyframes || []) mergedKeyframes.add(key)
+    }
+    base.keyframes = [...mergedKeyframes]
+      .filter((key) => base.geometries[key])
+      .sort((a, b) => a - b)
+    if (!base.keyframes.length) base.keyframes = [base.startFrame]
     return { track: base, conflicts, merged: targets.length }
   }
 
-  /** 修改 track 元信息（标签 / 颜色 / 可见 / 锁定），对全部帧生效 */  function updateTrackMeta(datasetId, trackId, patch = {}) {
+  /** 修改 track 元信息（标签 / 颜色 / 可见 / 锁定），对全部帧生效 */
+  function updateTrackMeta(datasetId, trackId, patch = {}) {
     const track = getTrack(datasetId, trackId)
     if (!track) return false
     const next = {}
@@ -732,9 +808,14 @@ export function useAnnotation(options = {}) {
     if (!track || !track.geometries[frameIndex]) return false
     beforeMutation()
     delete track.geometries[frameIndex]
+    track.keyframes = (track.keyframes || []).filter((key) => key !== frameIndex)
     const keys = frameKeys(track.geometries)
-    if (!keys.length) removeTrackSilently(datasetId, trackId)
-    else track.startFrame = keys[0]
+    if (!keys.length) {
+      removeTrackSilently(datasetId, trackId)
+    } else {
+      track.startFrame = keys[0]
+      if (!track.keyframes.length) track.keyframes = [keys[0]]
+    }
     return true
   }
 
@@ -747,9 +828,14 @@ export function useAnnotation(options = {}) {
 
     beforeMutation()
     for (const key of keys) delete track.geometries[key]
+    track.keyframes = (track.keyframes || []).filter((key) => key < frameIndex)
     const remaining = frameKeys(track.geometries)
-    if (!remaining.length) removeTrackSilently(datasetId, trackId)
-    else track.startFrame = remaining[0]
+    if (!remaining.length) {
+      removeTrackSilently(datasetId, trackId)
+    } else {
+      track.startFrame = remaining[0]
+      if (!track.keyframes.length) track.keyframes = [remaining[0]]
+    }
     return true
   }
 
@@ -839,6 +925,7 @@ export function useAnnotation(options = {}) {
         locked: track.locked === true,
         startFrame: keys.length ? keys[0] : track.startFrame,
         endFrame: keys.length ? keys[keys.length - 1] : track.startFrame,
+        keyframes: [...(track.keyframes || [])].sort((a, b) => a - b),
         frames,
       }
     })

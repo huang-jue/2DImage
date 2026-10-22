@@ -58,7 +58,13 @@ function rangeText(track) {
     keys[0] === keys[keys.length - 1]
       ? `第 ${keys[0] + 1} 帧`
       : `${keys[0] + 1}–${keys[keys.length - 1] + 1} 帧`
-  return `${range} · ${keys.length} 关键帧`
+  const keyframes = (track.keyframes || []).length
+  return `${range} · ${keyframes} 关键帧`
+}
+
+/** 当前帧是否已经是该对象的关键帧 */
+function isKeyframe(track) {
+  return (track.keyframes || []).includes(props.frameIndex)
 }
 
 /** 对象在当前帧是否有几何 */
@@ -155,11 +161,11 @@ function handleLabelChange(track, value) {
 
         <div class="object-panel__actions" @click.stop>
           <el-button
-            v-if="!hasCurrentFrame(track)"
+            v-if="!isKeyframe(track)"
             link
             type="primary"
             :icon="Plus"
-            title="在当前帧插入关键帧（复制最近关键帧的几何）"
+            title="把当前帧设为关键帧（已有几何时直接标记，没有则复制最近关键帧）"
             @click="emit('add-keyframe', track.id)"
           />
           <el-button

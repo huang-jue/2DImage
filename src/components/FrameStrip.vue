@@ -18,6 +18,9 @@ const props = defineProps({
   frames: { type: Array, default: () => [] }, // [{ index, name, url }]
   current: { type: Number, default: 0 }, // 当前帧序号
   markedFrames: { type: Array, default: () => [] }, // 含标注的帧序号列表
+  selectedFrames: { type: Array, default: () => [] }, // 选中对象有几何的帧
+  selectedKeyframes: { type: Array, default: () => [] }, // 选中对象的关键帧
+  hasSelection: { type: Boolean, default: false },
   autoAdvance: { type: Boolean, default: false }, // 画完是否自动跳到下一帧
 })
 
@@ -36,6 +39,18 @@ const markedSorted = computed(() =>
 const unmarkedSorted = computed(() =>
   props.frames.map((frame) => frame.index).filter((index) => !markedSet.value.has(index)),
 )
+
+// 选中对象的关键帧 / 有几何帧
+const keyframeSet = computed(() => new Set(props.selectedKeyframes))
+const selectedFrameSet = computed(() => new Set(props.selectedFrames))
+
+/** 缩略图标记类型：keyframe | derived | null */
+function markerType(index) {
+  if (!props.hasSelection) return null
+  if (keyframeSet.value.has(index)) return 'keyframe'
+  if (selectedFrameSet.value.has(index)) return 'derived'
+  return null
+}
 
 /** 切换到指定帧（自动夹取到合法范围） */
 function go(index) {
@@ -172,6 +187,11 @@ watch(() => props.current, ensureActiveVisible, { immediate: true })
       >
         画完自动跳帧
       </el-checkbox>
+
+      <div v-if="hasSelection" class="frame-strip__legend">
+        <span class="frame-strip__legend-key" /> 关键帧
+        <span class="frame-strip__legend-derived" /> 非关键帧
+      </div>
     </div>
 
     <el-scrollbar class="frame-strip__scroll">
@@ -191,10 +211,20 @@ watch(() => props.current, ensureActiveVisible, { immediate: true })
             loading="lazy"
             decoding="async"
           />
-          <span class="frame-strip__index">{{ frame.index + 1 }}</span>
           <span
-            v-if="markedSet.has(frame.index)"
+            class="frame-strip__index"
+            :class="{ 'is-keyframe': hasSelection && keyframeSet.has(frame.index) }"
+          >{{ frame.index + 1 }}</span>
+          <span
+            v-if="hasSelection && markerType(frame.index)"
+            class="frame-strip__marker"
+            :class="markerType(frame.index) === 'keyframe' ? 'is-keyframe' : 'is-derived'"
+            :title="markerType(frame.index) === 'keyframe' ? '关键帧' : '非关键帧（填充 / 插值）'"
+          />
+          <span
+            v-else-if="!hasSelection && markedSet.has(frame.index)"
             class="frame-strip__dot"
+            title="含标注"
           />
         </button>
       </div>
@@ -290,5 +320,65 @@ watch(() => props.current, ensureActiveVisible, { immediate: true })
   border-radius: 50%;
   background: #67c23a;
   box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+}
+
+/* 选中对象：关键帧 / 非关键帧标记 */
+.frame-strip__marker {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  box-sizing: border-box;
+}
+
+.frame-strip__marker.is-keyframe {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 2px solid #ffffff;
+  background: #409eff;
+  transform: rotate(45deg);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.frame-strip__marker.is-derived {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid #79bbff;
+  background: rgba(64, 158, 255, 0.12);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+/* 关键帧的帧号使用蓝色底 */
+.frame-strip__index.is-keyframe {
+  background: #409eff;
+}
+
+/* 图例 */
+.frame-strip__legend {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #606266;
+  white-space: nowrap;
+}
+
+.frame-strip__legend-key {
+  width: 9px;
+  height: 9px;
+  margin-left: 6px;
+  border-radius: 2px;
+  border: 1px solid #ffffff;
+  background: #409eff;
+  transform: rotate(45deg);
+}
+
+.frame-strip__legend-derived {
+  width: 8px;
+  height: 8px;
+  margin-left: 6px;
+  border-radius: 50%;
+  border: 2px solid #79bbff;
 }
 </style>

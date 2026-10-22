@@ -348,7 +348,7 @@ async function handleClear() {
       <el-button
         plain
         :disabled="!selectedCount"
-        title="在整条对象的所有相邻关键帧之间补全空白帧"
+        title="在相邻关键帧之间重新计算填充帧"
         @click="emit('interpolate')"
       >
         插值补全

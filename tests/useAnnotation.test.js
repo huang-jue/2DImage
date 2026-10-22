@@ -152,10 +152,18 @@ describe('useAnnotation / interpolate', () => {
 })
 
 describe('useAnnotation / 关键帧', () => {
+  it('新建对象默认只有创建帧是关键帧', () => {
+    const { api } = setup()
+    const track = createRect(api, 4)
+    expect(track.keyframes).toEqual([0])
+    expect(Object.keys(track.geometries)).toHaveLength(5)
+  })
+
   it('「仅当前帧」创建的对象只有一个关键帧', () => {
     const { api } = setup()
     const track = createRect(api, 0)
     expect(Object.keys(track.geometries)).toEqual(['0'])
+    expect(track.keyframes).toEqual([0])
   })
 
   it('addKeyframe 复制最近关键帧几何，随后可插值补全', () => {
@@ -164,9 +172,44 @@ describe('useAnnotation / 关键帧', () => {
     expect(api.addKeyframe('d1', track.id, 4)).toBe(true)
     expect(track.geometries[4]).toEqual(track.geometries[0])
     expect(api.addKeyframe('d1', track.id, 4)).toBe(false)
+    expect(track.keyframes).toEqual([0, 4])
 
     expect(api.interpolate('d1', track.id)).toBe(3)
     expect(track.geometries[2]).toEqual(track.geometries[0])
+  })
+
+  it('已有几何的帧可直接标记为关键帧，不会改变几何', () => {
+    const { api } = setup()
+    const track = createRect(api, 4)
+    api.updateFromFrame('d1', track.id, 3, rect(30), 4, 'frame')
+    expect(track.geometries[4].x).toBe(0)
+
+    expect(api.addKeyframe('d1', track.id, 4)).toBe(true)
+    expect(track.keyframes).toEqual([0, 3, 4])
+    expect(track.geometries[4].x).toBe(0)
+  })
+
+  it('插值会覆盖关键帧之间的填充帧', () => {
+    const { api } = setup()
+    const track = createRect(api, 4)
+    api.addKeyframe('d1', track.id, 4)
+    api.updateFromFrame('d1', track.id, 4, rect(40, 20, 50, 10), 4, 'frame')
+
+    expect(api.interpolate('d1', track.id)).toBe(3)
+    expect(track.geometries[2]).toEqual({ x: 20, y: 10, width: 30, height: 10 })
+    expect(track.keyframes).toEqual([0, 4])
+  })
+
+  it('forward 编辑会停在下一个关键帧之前，并提升当前帧', () => {
+    const { api } = setup()
+    const track = createRect(api, 10)
+    api.addKeyframe('d1', track.id, 6)
+
+    api.updateFromFrame('d1', track.id, 2, rect(50), 10, 'forward')
+    expect(track.geometries[2].x).toBe(50)
+    expect(track.geometries[5].x).toBe(50)
+    expect(track.geometries[6].x).toBe(0)
+    expect(track.keyframes).toEqual([0, 2, 6])
   })
 
   it('reveal 选项会把隐藏的对象恢复显示', () => {
@@ -266,6 +309,7 @@ describe('useAnnotation / 导入导出', () => {
     const [imported] = target.getTracks('d9')
     expect(imported.id).toBe(track.id)
     expect(imported.geometries[3]).toEqual({ x: 0, y: 0, width: 10, height: 10 })
+    expect(imported.keyframes).toEqual([0])
   })
 
   it('重复导入时自动重命名冲突 id', () => {
@@ -369,14 +413,18 @@ describe('useAnnotation / 批量操作', () => {
 })
 
 describe('useAnnotation / 拆分与合并', () => {
-  it('splitTrack 把当前帧及之后迁到新对象', () => {
+  it('splitTrack 把当前帧及之后迁到新对象，并拆分关键帧', () => {
     const { api, snapshots } = setup()
-    const track = createRect(api, 4)
+    const track = createRect(api, 9)
+    api.addKeyframe('d1', track.id, 4)
+    api.addKeyframe('d1', track.id, 8)
     const before = snapshots.length
 
-    const result = api.splitTrack('d1', track.id, 2)
-    expect(Object.keys(result.source.geometries)).toEqual(['0', '1'])
-    expect(Object.keys(result.track.geometries)).toEqual(['2', '3', '4'])
+    const result = api.splitTrack('d1', track.id, 5)
+    expect(Object.keys(result.source.geometries)).toEqual(['0', '1', '2', '3', '4'])
+    expect(Object.keys(result.track.geometries)).toEqual(['5', '6', '7', '8', '9'])
+    expect(result.source.keyframes).toEqual([0, 4])
+    expect(result.track.keyframes).toEqual([5, 8])
     expect(result.track.id).not.toBe(track.id)
     expect(api.countTracks('d1')).toBe(2)
     expect(snapshots.length).toBe(before + 1)
@@ -404,6 +452,7 @@ describe('useAnnotation / 拆分与合并', () => {
     expect(result.merged).toBe(2)
     expect(result.conflicts).toBe(2)
     expect(api.countTracks('d1')).toBe(1)
+    expect(a.keyframes).toEqual([0, 3])
     expect(a.geometries[3].x).toBe(0)
     expect(a.geometries[4].x).toBe(0)
     expect(snapshots.length).toBe(before + 1)

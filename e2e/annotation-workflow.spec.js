@@ -23,12 +23,36 @@ test('仅当前帧关键帧 + 插入关键帧 + 插值补全', async ({ page }) 
   await expect(stats(page).nth(1)).toContainText('本帧 1 个')
 
   await page.getByRole('button', { name: '插值补全' }).click()
-  await expect(page.locator('.el-message').last()).toContainText('已插值补全 18 帧')
-  await expect(page.locator('.frame-strip__dot')).toHaveCount(20)
+  await expect(page.locator('.el-message').last()).toContainText('已按关键帧重新计算 18 帧')
+  await expect(page.locator('.frame-strip__marker.is-keyframe')).toHaveCount(2)
+  await expect(page.locator('.frame-strip__marker.is-derived')).toHaveCount(18)
+  await expect(page.locator('.frame-strip__legend')).toBeVisible()
 
   await jumpToFrame(page, 5)
   await expect(stats(page).nth(1)).toContainText('本帧 1 个')
   await expect(page.locator('.object-panel__sub').first()).toContainText('1–20 帧')
+})
+
+test('选中对象后帧条区分关键帧与非关键帧', async ({ page }) => {
+  await waitForApp(page)
+  await toolButton(page, '矩形').click()
+  await drawRect(page)
+
+  // 默认「到末帧」：只有创建帧是关键帧，其余为填充帧
+  await expect(page.locator('.frame-strip__marker.is-keyframe')).toHaveCount(1)
+  await expect(page.locator('.frame-strip__marker.is-derived')).toHaveCount(19)
+  await expect(page.locator('.frame-strip__marker.is-keyframe')).toHaveAttribute(
+    'title',
+    '关键帧',
+  )
+  await expect(page.locator('.frame-strip__legend')).toContainText('关键帧')
+
+  // 在第 5 帧把已有几何标记为关键帧
+  await jumpToFrame(page, 5)
+  await page.locator('.toolbar__actions').getByRole('button', { name: '插入关键帧' }).click()
+  await expect(page.locator('.frame-strip__marker.is-keyframe')).toHaveCount(2)
+  await expect(page.locator('.frame-strip__marker.is-derived')).toHaveCount(18)
+  await expect(page.locator('.object-panel__sub').first()).toContainText('2 关键帧')
 })
 
 test('拆分与合并对象', async ({ page }) => {

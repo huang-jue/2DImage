@@ -110,6 +110,20 @@ const trackCount = computed(() =>
 const tracks = computed(() =>
   activeId.value ? annotation.getTracks(activeId.value) : [],
 )
+// 主选中对象（多选时用于帧条关键帧标记）
+const primaryTrack = computed(() =>
+  selectedId.value ? annotation.getTrack(activeId.value, selectedId.value) : null,
+)
+// 主选中对象在当前数据集内所有有几何的帧
+const selectedFrames = computed(() => {
+  const track = primaryTrack.value
+  return track ? Object.keys(track.geometries).map(Number) : []
+})
+// 主选中对象的关键帧
+const selectedKeyframes = computed(() => {
+  const track = primaryTrack.value
+  return track && Array.isArray(track.keyframes) ? [...track.keyframes] : []
+})
 // 含标注的帧序号集合（供帧条显示标记）
 const markedFrames = computed(() => {
   if (!activeId.value) return []
@@ -387,10 +401,11 @@ function handleAddKeyframe(trackId = null) {
   if (!selectedId.value || !ensureUnlocked()) return
   const track = selectedTrack()
   if (!track) return
-  if (track.geometries[frameIndex.value]) {
-    ElMessage.info('当前帧已有几何，无需插入关键帧')
+  if ((track.keyframes || []).includes(frameIndex.value)) {
+    ElMessage.info('当前帧已经是关键帧')
     return
   }
+  const hadGeometry = Boolean(track.geometries[frameIndex.value])
   const wasHidden = track.visible === false
   const ok = annotation.addKeyframe(
     activeId.value,
@@ -400,13 +415,16 @@ function handleAddKeyframe(trackId = null) {
     { reveal: true },
   )
   if (ok) {
-    // 插入后立即进入选择工具，保证可以直接拖动
     tool.value = 'select'
-    ElMessage.success(
-      wasHidden
-        ? '已插入关键帧并恢复显示，可直接拖动调整；随后点「插值补全」生成中间帧'
-        : '已插入关键帧，可直接拖动调整；随后点「插值补全」生成中间帧',
-    )
+    if (hadGeometry) {
+      ElMessage.success('已在当前帧插入关键帧，可直接拖动调整；随后点「插值补全」重新计算中间帧')
+    } else {
+      ElMessage.success(
+        wasHidden
+          ? '已插入关键帧并恢复显示，可直接拖动调整；随后点「插值补全」生成中间帧'
+          : '已插入关键帧，可直接拖动调整；随后点「插值补全」生成中间帧',
+      )
+    }
   } else {
     ElMessage.warning('插入关键帧失败')
   }
@@ -415,14 +433,19 @@ function handleAddKeyframe(trackId = null) {
 /** 在整条对象的所有相邻关键帧之间插值 */
 function handleInterpolate() {
   if (!selectedId.value || !ensureUnlocked()) return
-  const filled = annotation.interpolate(activeId.value, selectedId.value)
-  if (filled) {
-    ElMessage.success(`已插值补全 ${filled} 帧`)
+  const track = selectedTrack()
+  if (!track) return
+  const keyframes = (track.keyframes || []).filter((key) => track.geometries[key])
+  if (keyframes.length < 2) {
+    ElMessage.info('至少需要两个关键帧：先跳到目标帧点「插入关键帧」')
     return
   }
-  ElMessage.info(
-    '没有需要插值的空白帧：先用「新建：仅当前帧」画出第一个关键帧，再到后面的帧点「插入关键帧」，最后点「插值补全」',
-  )
+  const filled = annotation.interpolate(activeId.value, selectedId.value)
+  if (filled) {
+    ElMessage.success(`已按关键帧重新计算 ${filled} 帧`)
+    return
+  }
+  ElMessage.info('关键帧之间没有需要重新计算的帧（或折线点数不一致）')
 }
 
 /** 把对象几何向更早的帧补齐 */
@@ -1032,6 +1055,9 @@ onMounted(async () => {
         v-model:auto-advance="autoAdvance"
         :frames="frames"
         :marked-frames="markedFrames"
+        :selected-frames="selectedFrames"
+        :selected-keyframes="selectedKeyframes"
+        :has-selection="Boolean(selectedId)"
       />
     </footer>
 
