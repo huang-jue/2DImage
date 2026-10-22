@@ -14,3 +14,101 @@
 body {
   margin: 0;
 }
+
+/* —— 暗色主题下的自定义表面（Element Plus 组件由 dark css-vars 处理） —— */
+html.dark body {
+  background: #14151a;
+  color: #e5eaf3;
+}
+
+html.dark .app {
+  background: #14151a;
+}
+
+html.dark .app__title {
+  color: #e5eaf3;
+}
+
+html.dark .app__toolbar,
+html.dark .app__footer,
+html.dark .object-panel {
+  background: #24262e;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+html.dark .object-panel__header,
+html.dark .object-panel__row {
+  border-color: #33353d;
+}
+
+html.dark .object-panel__title {
+  color: #e5eaf3;
+}
+
+html.dark .object-panel__row:hover {
+  background: #2c2f38;
+}
+
+html.dark .object-panel__row.is-active {
+  background: #1d3a5c;
+  box-shadow: inset 3px 0 0 #409eff;
+}
+
+html.dark .object-panel__batch {
+  background: #2c2f38;
+  border-color: #33353d;
+}
+
+html.dark .object-panel__sub,
+html.dark .object-panel__empty,
+html.dark .frame-strip__jump,
+html.dark .toolbar__label {
+  color: #a8abb2;
+}
+
+html.dark .app__verify-local {
+  background: rgba(103, 194, 58, 0.16);
+  color: #85ce61;
+}
+
+/* 导出对话框 */
+html.dark .export-dialog__section h3 {
+  color: #e5eaf3;
+}
+
+html.dark .export-dialog__format {
+  border-color: #3a3d46;
+}
+
+html.dark .export-dialog__format-name {
+  color: #e5eaf3;
+}
+
+html.dark .export-dialog__format-desc {
+  color: #a8abb2;
+}
+
+/* 快捷键帮助 */
+html.dark .shortcut-help__group h3 {
+  color: #e5eaf3;
+}
+
+html.dark .shortcut-help__grid {
+  color: #c0c4cc;
+}
+
+html.dark kbd {
+  border-color: #4a4d57;
+  background: #2c2f38;
+  color: #e5eaf3;
+}
+
+/* 标签类别管理 */
+html.dark .label-manager__hint,
+html.dark .label-manager__empty {
+  color: #a8abb2;
+}
+
+html.dark .label-manager__add {
+  border-top-color: #3a3d46;
+}
