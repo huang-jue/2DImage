@@ -20,11 +20,13 @@ import ObjectPanel from './components/ObjectPanel.vue'
 import LabelManager from './components/LabelManager.vue'
 import ShortcutHelp from './components/ShortcutHelp.vue'
 import ExportDialog from './components/ExportDialog.vue'
+import ProjectionControl from './components/ProjectionControl.vue'
 import { useDatasets } from './composables/useDatasets'
 import { useAnnotation } from './composables/useAnnotation'
 import { useHistory } from './composables/useHistory'
 import { usePersistence } from './composables/usePersistence'
 import { useLabels } from './composables/useLabels'
+import { useProjection } from './composables/useProjection'
 import { useShortcuts } from './composables/useShortcuts'
 import { useSession } from './composables/useSession'
 import { pickLocalDirectory } from './composables/useLocalDataset'
@@ -114,6 +116,26 @@ const tracks = computed(() =>
 const primaryTrack = computed(() =>
   selectedId.value ? annotation.getTrack(activeId.value, selectedId.value) : null,
 )
+// 投影：跨帧只读叠加，只影响视图，不写入标注
+const {
+  settings: projectionSettings,
+  shapes: projectionShapes,
+  images: projectionImages,
+  summary: projectionSummary,
+  warning: projectionWarning,
+  apply: applyProjection,
+  restore: restoreProjection,
+  snapshot: projectionSnapshot,
+  toggle: toggleProjection,
+} = useProjection({
+  datasetId: activeId,
+  frames,
+  frameIndex,
+  lastFrame,
+  selectedId,
+  selectedTrack: primaryTrack,
+  getFrameShapes: annotation.getFrameShapes,
+})
 // 主选中对象在当前数据集内所有有几何的帧
 const selectedFrames = computed(() => {
   const track = primaryTrack.value
@@ -160,6 +182,7 @@ const session = useSession(() => ({
   color: color.value,
   panelVisible: panelVisible.value,
   showLabels: showLabels.value,
+  projection: projectionSnapshot(),
 }))
 
 /** 应用上次会话，非法值忽略 */
@@ -185,6 +208,7 @@ function applySession(state) {
   if (typeof state.color === 'string' && state.color) color.value = state.color
   if (typeof state.panelVisible === 'boolean') panelVisible.value = state.panelVisible
   if (typeof state.showLabels === 'boolean') showLabels.value = state.showLabels
+  restoreProjection(state.projection, { frameCount: frames.value.length })
 }
 
 /** 记录历史快照（由 useAnnotation 在写操作前调用） */
@@ -393,6 +417,20 @@ function handleCopyPrevious() {
   )
   if (count) ElMessage.success(`已从上一帧复制 ${count} 个对象`)
   else ElMessage.info('上一帧没有可复制的对象')
+}
+
+/** 应用投影设置（控件输出完整设置对象） */
+function handleProjectionSettings(next) {
+  applyProjection(next, { frameCount: frames.value.length })
+}
+
+/** 点击投影图形：跳到来源帧，并选中对应对象 */
+function handleProjectionJump({ frame, trackId } = {}) {
+  if (!Number.isInteger(frame)) return
+  frameIndex.value = Math.min(Math.max(frame, 0), lastFrame.value)
+  if (trackId && annotation.getTrack(activeId.value, trackId)) {
+    selectedId.value = trackId
+  }
 }
 
 /** 在当前帧插入关键帧（复制最近关键帧几何，便于后续插值） */
@@ -814,6 +852,7 @@ useShortcuts({
   p: () => setTool('point'),
   l: () => setTool('line'),
   g: () => setTool('polygon'),
+  o: toggleProjection,
   1: () => applyLabelIndex(0),
   2: () => applyLabelIndex(1),
   3: () => applyLabelIndex(2),
@@ -934,6 +973,14 @@ onMounted(async () => {
         >
           对象面板
         </el-button>
+        <ProjectionControl
+          :model-value="projectionSettings"
+          :has-selection="Boolean(primaryTrack)"
+          :current-frame="frameIndex"
+          :frame-count="frames.length"
+          :warning="projectionWarning"
+          @update:model-value="handleProjectionSettings"
+        />
         <el-checkbox v-model="showLabels" size="small" class="app__labels-toggle">
           显示标签
         </el-checkbox>
@@ -1026,11 +1073,18 @@ onMounted(async () => {
           :color="color"
           :show-labels="showLabels"
           :preload-urls="preloadUrls"
+          :projection-enabled="projectionSettings.enabled"
+          :projection-shapes="projectionShapes"
+          :projection-images="projectionImages"
+          :projection-opacity="projectionSettings.opacity"
+          :projection-show-labels="projectionSettings.showLabels"
+          :projection-summary="projectionSummary"
           @create="handleCreate"
           @update="handleUpdate"
           @update-many="handleUpdateMany"
           @select="handleCanvasSelect"
           @delete-selected="handleDeleteSelected"
+          @projection-jump="handleProjectionJump"
         />
       </main>
       <ObjectPanel

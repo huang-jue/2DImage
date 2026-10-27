@@ -33,6 +33,12 @@ const props = defineProps({
   color: { type: String, default: '#409eff' }, // 新标注默认颜色
   showLabels: { type: Boolean, default: true }, // 是否在画布上显示标签文字
   preloadUrls: { type: Array, default: () => [] }, // 需要预加载的相邻帧图片
+  projectionEnabled: { type: Boolean, default: false }, // 是否显示跨帧投影
+  projectionShapes: { type: Array, default: () => [] }, // 投影的只读图形
+  projectionImages: { type: Array, default: () => [] }, // 投影的帧图像
+  projectionOpacity: { type: Number, default: 0.35 }, // 图像与标注共用透明度
+  projectionShowLabels: { type: Boolean, default: false }, // 是否显示投影标签
+  projectionSummary: { type: String, default: '' }, // 状态条文案
 })
 
 const emit = defineEmits([
@@ -42,6 +48,7 @@ const emit = defineEmits([
   'select',
   'delete',
   'delete-selected',
+  'projection-jump',
 ])
 
 const containerRef = ref(null)
@@ -72,6 +79,11 @@ let selectedShape = null // 当前选中的 shape 数据
 let renderedFrameIndex = null // 已渲染的帧序号（用于判断是否需要全量重建）
 let vertexHandles = [] // 当前折线的顶点手柄
 let dragGroup = null // 多选组拖动时的临时状态
+let projectionLayer = null // 投影图层（当前帧图片之上、当前标注之下）
+let projectionImageGroup = null // 投影图像（不可点击）
+let projectionShapeGroup = null // 投影图形（选择工具下可点击跳帧）
+let projectionEntries = [] // { node, shape, labelNode }
+let projectionToken = 0 // 异步图像加载竞态令牌
 const nodeMap = new Map() // track id -> { node, type, shape }，用于增量更新
 
 // 视图变换：原图坐标 -> 屏幕坐标的等比缩放与偏移
@@ -152,6 +164,15 @@ function syncNodeMetrics() {
   for (const entry of nodeMap.values()) {
     if (entry.labelNode && entry.shape) styleLabelNode(entry.labelNode, entry.shape, entry.node)
   }
+  // 投影点 / 折线命中区与投影标签同步缩放
+  for (const entry of projectionEntries) {
+    const type = entry.shape.type
+    if (type === 'point') entry.node.radius(6 / view.scale)
+    else if (isPolyline(type)) entry.node.hitStrokeWidth(12 / view.scale)
+    if (entry.labelNode) {
+      styleLabelNode(entry.labelNode, entry.shape, entry.node, props.projectionShowLabels)
+    }
+  }
 }
 
 /** 更新光标处的原图坐标读数 */
@@ -170,7 +191,7 @@ function updateCursorText() {
 
 /** 把当前 view 变换应用到三个 Layer 上 */
 function applyView() {
-  for (const layer of [imageLayer, shapeLayer, overlayLayer]) {
+  for (const layer of [imageLayer, projectionLayer, shapeLayer, overlayLayer]) {
     if (!layer) continue
     layer.scale({ x: view.scale, y: view.scale })
     layer.position({ x: view.offsetX, y: view.offsetY })
@@ -345,19 +366,22 @@ function endGroupDrag(node, shape) {
   emit('update-many', updates)
 }
 
-/** 根据图形数据创建 Konva 节点，并绑定选择/拖拽/缩放事件 */
-function createNode(shape) {
+/**
+ * 根据图形数据创建 Konva 节点。
+ * interactive=true 用于当前帧标注，false 用于只读投影。
+ */
+function createShapeNode(shape, interactive = true) {
   const color = shape.color || props.color
-  // 公共属性：描边不随缩放变粗（strokeScaleEnabled=false），仅在 select 工具下可拖动
+  // 公共属性：描边不随缩放变粗（strokeScaleEnabled=false）
   const common = {
-    id: shape.id,
-    name: 'annotation',
+    ...(interactive ? { id: shape.id } : {}),
+    name: interactive ? 'annotation' : 'projection-shape',
     stroke: color,
     strokeWidth: 2,
     strokeScaleEnabled: false,
-    // 绘制工具下不拦截指针事件，避免影响连续落点
-    listening: props.tool === 'select',
-    draggable: props.tool === 'select' && !shape.locked,
+    // 当前帧标注只在 select 工具下拦截事件；投影由图层/分组统一控制
+    listening: interactive ? props.tool === 'select' : true,
+    draggable: interactive ? props.tool === 'select' && !shape.locked : false,
   }
   let node
   if (shape.type === 'rect') {
@@ -390,6 +414,19 @@ function createNode(shape) {
     })
   }
   node.setAttr('shapeType', shape.type)
+
+  if (!interactive) {
+    node.opacity(props.projectionOpacity)
+    // 矩形投影加极淡填充，便于点击内部而不是只能点边框
+    if (shape.type === 'rect') node.fill(`${color}11`)
+    if (isPolyline(shape.type)) node.hitStrokeWidth(12 / view.scale)
+  }
+  return node
+}
+
+/** 当前帧标注节点：创建后绑定选择/拖拽/缩放事件 */
+function createNode(shape) {
+  const node = createShapeNode(shape, true)
   node.on('click tap', (event) => {
     event.cancelBubble = true // 阻止冒泡到 Stage，避免随即被反选
     emit('select', { id: shape.id, additive: event.evt?.shiftKey === true })
@@ -401,6 +438,21 @@ function createNode(shape) {
   node.on('dragmove', () => moveGroupDrag(node))
   node.on('dragend', () => endGroupDrag(node, shape))
   node.on('transformend', () => commitNode(node, shape))
+  return node
+}
+
+/** 投影节点：只读，点击跳转到来源帧 */
+function createProjectionNode(shape) {
+  const node = createShapeNode(shape, false)
+  node.on('click tap', (event) => {
+    event.cancelBubble = true
+    if (!Number.isInteger(shape.sourceFrame)) return
+    emit('projection-jump', { frame: shape.sourceFrame, trackId: shape.id })
+  })
+  node.on('mouseenter', () => {
+    if (stage) stage.container().style.cursor = 'pointer'
+  })
+  node.on('mouseleave', () => resetCursor())
   return node
 }
 
@@ -430,6 +482,14 @@ function createLabelNode(shape, node) {
   return label
 }
 
+/** 投影标签：低透明度、始终可读，但仍不参与交互 */
+function createProjectionLabel(shape, node) {
+  const label = createLabelNode(shape, node)
+  label.visible(true)
+  label.opacity(props.projectionOpacity)
+  return label
+}
+
 /** 标签文字的位置：矩形在上方，点/折线在锚点右上 */
 function labelPosition(shape, node) {
   const scale = view.scale
@@ -451,7 +511,7 @@ function labelPosition(shape, node) {
 }
 
 /** 按当前缩放与标签内容更新标签样式和位置 */
-function styleLabelNode(label, shape, node) {
+function styleLabelNode(label, shape, node, visible = props.showLabels) {
   const scale = view.scale
   const tag = label.getTag()
   const text = label.getText()
@@ -463,7 +523,7 @@ function styleLabelNode(label, shape, node) {
   tag.pointerWidth(5 / scale)
   tag.pointerHeight(4 / scale)
   label.position(labelPosition(shape, node))
-  label.visible(props.showLabels)
+  label.visible(visible)
 }
 
 /** 拖动期间隐藏标签，避免标签停留在旧位置 */
@@ -679,6 +739,132 @@ function renderShapes() {
 
   applySelection()
   shapeLayer.batchDraw()
+}
+
+/** 重置画布光标（投影悬停 / 关闭 / 失焦时复用） */
+function resetCursor() {
+  if (stage) stage.container().style.cursor = ''
+}
+
+/** 投影是否可点击：只在选择工具且有投影图形时启用 */
+function isProjectionInteractive() {
+  return Boolean(
+    props.projectionEnabled &&
+      props.tool === 'select' &&
+      props.projectionShapes.length > 0,
+  )
+}
+
+/** 同步投影图层 / 分组的事件监听状态 */
+function syncProjectionListening() {
+  const interactive = isProjectionInteractive()
+  projectionLayer?.listening(interactive)
+  projectionShapeGroup?.listening(interactive)
+}
+
+/** 销毁投影节点（不递增令牌，供渲染和卸载复用） */
+function clearProjectionNodes() {
+  projectionEntries = []
+  projectionImageGroup?.destroy()
+  projectionShapeGroup?.destroy()
+  projectionImageGroup = null
+  projectionShapeGroup = null
+  resetCursor()
+}
+
+/** 创建当前投影图形（只读 + 点击跳帧） */
+function renderProjectionShapes() {
+  if (!projectionShapeGroup) return
+  const nodes = []
+  const labels = []
+  projectionEntries = []
+  for (const shape of props.projectionShapes) {
+    const node = createProjectionNode(shape)
+    nodes.push(node)
+    let labelNode = null
+    if (props.projectionShowLabels) {
+      labelNode = createProjectionLabel(shape, node)
+      labels.push(labelNode)
+    }
+    projectionEntries.push({ node, shape, labelNode })
+  }
+  // 先放图形，再统一放标签，避免后创建的图形盖住前面的标签
+  for (const node of nodes) projectionShapeGroup.add(node)
+  for (const label of labels) projectionShapeGroup.add(label)
+}
+
+/** 异步加载投影图像；token 防止旧帧结果覆盖新帧 */
+async function renderProjectionImages(token) {
+  const group = projectionImageGroup
+  const list = props.projectionImages || []
+  if (!group || !list.length) return
+
+  const loaded = await Promise.all(
+    list.map(async (item) => {
+      try {
+        const image = await loadImage(item.url)
+        return { item, image }
+      } catch {
+        return null
+      }
+    }),
+  )
+  if (token !== projectionToken || !projectionImageGroup || projectionImageGroup !== group) {
+    return
+  }
+
+  for (const entry of loaded) {
+    if (!entry) continue
+    const image = entry.image
+    const width = image.naturalWidth || image.width
+    const height = image.naturalHeight || image.height
+    if (!width || !height) continue
+    // 帧尺寸不一致时直接跳过图像投影，避免叠加错位
+    if (
+      naturalWidth &&
+      naturalHeight &&
+      (width !== naturalWidth || height !== naturalHeight)
+    ) {
+      console.warn(`投影图像尺寸与当前帧不一致，已跳过：${entry.item.url}`)
+      continue
+    }
+    const node = new Konva.Image({
+      image,
+      x: 0,
+      y: 0,
+      width,
+      height,
+      opacity: props.projectionOpacity,
+      listening: false,
+    })
+    group.add(node)
+  }
+  projectionLayer?.batchDraw()
+}
+
+/** 重建投影层：帧 / 设置 / 选中对象变化时调用 */
+async function renderProjection() {
+  if (!projectionLayer) return
+  const token = ++projectionToken
+  clearProjectionNodes()
+  syncProjectionListening()
+
+  if (!props.projectionEnabled) {
+    projectionLayer.listening(false)
+    projectionLayer.batchDraw()
+    return
+  }
+
+  projectionImageGroup = new Konva.Group({ listening: false })
+  projectionShapeGroup = new Konva.Group({ listening: props.tool === 'select' })
+  projectionLayer.add(projectionImageGroup)
+  projectionLayer.add(projectionShapeGroup)
+
+  renderProjectionShapes()
+  syncProjectionListening()
+  projectionLayer.batchDraw()
+
+  await renderProjectionImages(token)
 }
 
 /** 结束/取消当前绘制，清理 overlayLayer 上的临时图形 */
@@ -915,6 +1101,8 @@ function onStageClick(event) {
   if (props.tool !== 'select') return
   if (event.target && event.target.hasName && event.target.hasName('annotation')) return
   if (event.target && event.target.hasName && event.target.hasName('vertex')) return
+  // 投影层已 cancelBubble；这里再兜底一次，避免点击投影图形后反选
+  if (event.target && event.target.hasName && event.target.hasName('projection-shape')) return
   emit('select', { id: null, additive: false })
 }
 
@@ -983,11 +1171,13 @@ function onWindowBlur() {
   panState = null
   isPanning.value = false
   cursorText.value = ''
+  resetCursor()
 }
 
 /** 指针离开画布时清空坐标读数 */
 function onContainerLeave() {
   cursorText.value = ''
+  resetCursor()
 }
 
 /** 容器尺寸变化：同步 Stage 尺寸；首次或图片尺寸变化时才重新适配视图 */
@@ -1039,6 +1229,7 @@ async function loadAndRender() {
     if (sizeChanged) fitView()
     else applyView()
     renderShapes()
+    if (props.projectionEnabled) renderProjection()
     imageLayer.batchDraw()
     imageReady.value = true
     // 预加载相邻帧，减少切帧等待
@@ -1056,11 +1247,13 @@ onMounted(() => {
     width: container.clientWidth || 1,
     height: container.clientHeight || 1,
   })
-  // 三个图层：图片 / 已确认标注 / 绘制临时层
+  // 四个图层：图片 / 投影 / 已确认标注 / 绘制临时层
   imageLayer = new Konva.Layer({ listening: false })
+  projectionLayer = new Konva.Layer({ listening: false })
   shapeLayer = new Konva.Layer()
   overlayLayer = new Konva.Layer()
   stage.add(imageLayer)
+  stage.add(projectionLayer)
   stage.add(shapeLayer)
   stage.add(overlayLayer)
 
@@ -1102,6 +1295,20 @@ watch(
   },
 )
 
+// 投影设置 / 来源帧 / 图形变化时重建投影层
+watch(
+  () => [
+    props.projectionEnabled,
+    props.projectionShapes,
+    props.projectionImages,
+    props.projectionOpacity,
+    props.projectionShowLabels,
+  ],
+  () => {
+    renderProjection()
+  },
+)
+
 // 帧序号 / 图形数据 / 选中项变化时重建图层
 watch(
   () => [props.frameIndex, props.shapes, props.selectedIds, props.showLabels],
@@ -1113,7 +1320,9 @@ watch(
   () => props.tool,
   () => {
     finishDrawing()
+    resetCursor()
     renderShapes()
+    syncProjectionListening()
   },
 )
 
@@ -1125,6 +1334,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('blur', onWindowBlur)
   containerRef.value?.removeEventListener('mouseleave', onContainerLeave)
   resizeObserver?.disconnect()
+  projectionToken += 1
+  clearProjectionNodes()
+  projectionLayer = null
   stage?.destroy()
   stage = null
 })
@@ -1141,10 +1353,16 @@ defineExpose({ fitView, zoomIn, zoomOut })
       'is-pan-ready': panReady && !isPanning,
       'is-panning': isPanning,
     }"
+    :data-projection-enabled="projectionEnabled"
+    :data-projection-shapes="projectionShapes.length"
+    :data-projection-images="projectionImages.length"
   >
     <!-- Konva 会清空挂载容器的内容，因此这里必须是独立节点，不能包裹其它 DOM -->
     <div ref="containerRef" class="annotation-canvas__stage" />
     <div v-if="cursorText" class="annotation-canvas__cursor">{{ cursorText }}</div>
+    <div v-if="projectionEnabled" class="annotation-canvas__projection">
+      投影：{{ projectionSummary }}
+    </div>
     <div class="annotation-canvas__zoom">
       <button type="button" title="缩小" @click="zoomOut">−</button>
       <span>{{ zoomPercent }}%</span>
@@ -1196,6 +1414,25 @@ defineExpose({ fitView, zoomIn, zoomOut })
   color: #fff;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 投影状态条 */
+.annotation-canvas__projection {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  max-width: 60%;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   pointer-events: none;
   user-select: none;
 }

@@ -36,6 +36,8 @@ const groups = [
       { keys: 'Space + 拖拽', desc: '平移画布' },
       { keys: '中键拖拽', desc: '平移画布' },
       { keys: '滚轮', desc: '以指针为中心缩放' },
+      { keys: 'O', desc: '开关跨帧投影' },
+      { keys: '点击投影图形', desc: '跳到来源帧并选中对应对象' },
       { keys: '+ / -', desc: '放大 / 缩小' },
       { keys: '0', desc: '适应窗口' },
       { keys: '← / →', desc: '选择工具且有选中时微调 1px；否则切帧' },
